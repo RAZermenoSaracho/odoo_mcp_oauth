@@ -1,0 +1,15 @@
+# MCP OAuth for Odoo 19
+
+Install `odoo_mcp`, then install `odoo_mcp_oauth` in each database where OAuth is wanted. The addon extends `/mcp` with OAuth 2.1 authorization code and PKCE using native Odoo login and API keys.
+
+In Settings → MCP OAuth, enter one exact HTTPS Client ID Metadata Document (CIMD) URL per line. For ChatGPT, use `https://chatgpt.com/oauth/client.json`. The callback URL comes from that document and must match the request exactly. An empty list disables new authorizations.
+
+The public origin must be HTTPS. Enable Odoo `proxy_mode` and configure `dbfilter` so the request host selects the intended database. A trusted proxy may send `X-Forwarded-Host` and `X-Forwarded-Proto`, or use the cloudflared shape: preserve the public `Host` and send `X-Forwarded-Proto: https` without `X-Forwarded-Host`. Odoo must be reachable only through that trusted proxy because it trusts forwarded headers in proxy mode. The issuer and MCP resource use the resulting request host (`https://<host>` and `https://<host>/mcp`). Database headers do not select the OAuth issuer.
+
+Employees approve access on an Odoo consent page. An issued key uses the maximum native API key duration of the user's groups, or one day when no duration is configured. Users can revoke keys in Preferences → Account Security → API Keys. Removing a client URL through Settings → MCP OAuth deletes keys issued to that client; editing `ir.config_parameter` directly does not revoke them. Reusing an authorization code revokes the key issued on its first exchange, so a client network retry of `/oauth/token` revokes its token and requires reauthorization. If a user deletes a fresh key during the code's 60-second validity window, the code becomes replayable by whoever holds its PKCE verifier. Parallel exchanges rely on the database unique constraint: the loser rolls back its new key, then revokes the winner. Verify this with two concurrent requests on a disposable server before production use.
+
+OAuth metadata, authorization, and token endpoints have per-worker rate limits (120, 60, and 30 requests per minute respectively, keyed by database and IP). With N workers the effective ceiling can be N times each limit; add edge rate limiting if a global ceiling is required.
+
+Run addon tests only on a disposable database, for example: `odoo-bin -d <disposable_db> -i odoo_mcp,odoo_mcp_oauth --test-enable --stop-after-init`. For two disposable databases, mint keys using `odoo-bin shell -d <disposable_db> < scripts/mint_key.py`, then run `python3 scripts/isolation_check.py --base http://127.0.0.1:<port> --db-a <disposable_db_a> --db-b <disposable_db_b> --key-a <key_a> --key-b <key_b> --legacy-key-a <legacy_key_a>`.
+
+No refresh tokens, dynamic client registration, or manual client configuration are provided. Legacy `rpc` and global API keys remain accepted on `/mcp`. Removing this addon restores the original `/mcp` bearer behavior; unexpired `mcp` keys then become inert and expire through core autovacuum. Before production use, validate the actual connector flow, callback, and refresh behavior on a disposable database.
