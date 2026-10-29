@@ -27,6 +27,6 @@ for name in ('code', 'code2'):
         'uid': admin.id, 'client_id': CLIENT, 'client_name': 'Isolation',
         'redirect_uri': CALLBACK, 'code_challenge': challenge,
         'resource': f'https://{env.cr.dbname}.example.test/mcp',
-        'nonce': secrets.token_urlsafe(16), 'db': env.cr.dbname,
+        'nonce': secrets.token_urlsafe(16), 'db': env.cr.dbname, 'duration': '1',
     }, expiration=datetime.timedelta(minutes=10)))
 env.cr.commit()
