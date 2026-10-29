@@ -2,24 +2,35 @@
 <odoo>
     <template id="consent" name="MCP OAuth consent">
         <t t-call="web.login_layout">
-            <div class="oe_login_form">
+            <div class="container py-4">
                 <h2>Authorize MCP access</h2>
                 <p><strong t-out="client_name"/> (<span t-out="client_host"/>) requests access to this database.</p>
                 <p>Database: <span t-out="database"/></p>
                 <p>User: <span t-out="user_name"/></p>
-                <p>The API key expires after <span t-out="lifetime_days"/> days.</p>
                 <form action="/oauth/authorize" method="post">
                     <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
                     <input type="hidden" name="consent" t-att-value="consent"/>
-                    <button type="submit" name="decision" value="approve" class="btn btn-primary">Approve</button>
-                    <button type="submit" name="decision" value="deny" class="btn btn-secondary">Deny</button>
+                    <input type="hidden" name="decision" value="approve"/>
+                    <label for="o_mcp_oauth_duration" class="form-label">Access expires after</label>
+                    <select name="duration" id="o_mcp_oauth_duration" class="form-select" required="required">
+                        <t t-foreach="durations" t-as="duration">
+                            <option t-att-value="duration[0]" t-att-selected="duration[0] == default_duration and 'selected' or None" t-out="duration[1]"/>
+                        </t>
+                    </select>
+                    <button type="submit" class="btn btn-primary mt-3">Approve</button>
+                </form>
+                <form action="/oauth/authorize" method="post" class="mt-2">
+                    <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+                    <input type="hidden" name="consent" t-att-value="consent"/>
+                    <input type="hidden" name="decision" value="deny"/>
+                    <button type="submit" class="btn btn-secondary">Deny</button>
                 </form>
             </div>
         </t>
     </template>
     <template id="error" name="MCP OAuth error">
         <t t-call="web.login_layout">
-            <div class="oe_login_form">
+            <div class="container py-4">
                 <h2>Authorization unavailable</h2>
                 <p>This OAuth request cannot be completed.</p>
             </div>

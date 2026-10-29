@@ -15,6 +15,7 @@ from werkzeug.exceptions import NotFound
 from werkzeug.urls import url_quote
 
 from odoo import http
+from odoo.exceptions import ValidationError
 from odoo.http import request
 from odoo.tools import SQL
 from odoo.tools.misc import hash_sign, verify_hash_signed
@@ -38,6 +39,7 @@ SAFE_HEADERS = [
 NO_STORE = [('Cache-Control', 'no-store')]
 CHALLENGE = re.compile(r'^[A-Za-z0-9_-]{43}$')
 VERIFIER = re.compile(r'^[A-Za-z0-9._~-]{43,128}$')
+DURATIONS = [('1', '1 Day'), ('30', '1 Month'), ('365', '1 Year'), ('0', 'Never')]
 
 
 def _limited(limiter, json_response=False):
@@ -78,6 +80,11 @@ def _redirect(uri, values):
 
 def _valid_user(user):
     return user.exists() and user.active and user._is_internal()
+
+
+def _durations(user):
+    allowed = dict(request.env['res.users.apikeys.description'].with_user(user)._selection_duration())
+    return [(value, label) for value, label in DURATIONS if value in allowed]
 
 
 def _client_document(url, redirect_uri):
@@ -179,6 +186,9 @@ class OAuthController(McpController):
         user = request.env.user
         if not _valid_user(user):
             return _redirect(redirect_uri, {'error': 'access_denied', 'state': state, 'iss': issuer})
+        durations = _durations(user)
+        if not durations:
+            return _redirect(redirect_uri, {'error': 'access_denied', 'state': state, 'iss': issuer})
         name = document.get('client_name')
         if not isinstance(name, str) or not name:
             name = urlsplit(client_id).hostname
@@ -190,11 +200,11 @@ class OAuthController(McpController):
         # The signing secret is system-only; the rest of the request keeps the user's ACLs.
         consent = hash_sign(request.env(su=True), 'odoo_mcp_oauth.consent', values,
                             expiration=datetime.timedelta(minutes=10))
-        lifetime = max(user.all_group_ids.mapped('api_key_duration'), default=0.0) or 1.0
         return request.render('odoo_mcp_oauth.consent', {
             'client_name': name, 'client_host': urlsplit(client_id).hostname,
             'database': request.db, 'user_name': user.name,
-            'lifetime_days': lifetime, 'consent': consent,
+            'durations': durations, 'default_duration': '30' if '30' in dict(durations) else durations[0][0],
+            'consent': consent,
         }, headers=SAFE_HEADERS)
 
     @http.route('/oauth/authorize', type='http', auth='user', methods=['POST'],
@@ -222,8 +232,11 @@ class OAuthController(McpController):
         state = values.get('state', '')
         if kw['decision'] == 'deny':
             return _redirect(redirect_uri, {'error': 'access_denied', 'state': state, 'iss': issuer})
+        if kw.get('duration') not in dict(_durations(request.env.user)):
+            return _error_page()
         code_values = {key: values[key] for key in (
             'uid', 'client_id', 'client_name', 'redirect_uri', 'code_challenge', 'resource', 'db')}
+        code_values['duration'] = kw['duration']
         code_values['nonce'] = secrets.token_urlsafe(16)
         code = hash_sign(request.env(su=True), 'odoo_mcp_oauth.code', code_values,
                          expiration=datetime.timedelta(seconds=60))
@@ -266,9 +279,12 @@ class OAuthController(McpController):
         user = request.env['res.users'].sudo().browse(uid) if isinstance(uid, int) else request.env['res.users']
         if not _valid_user(user):
             return _json_error('invalid_grant')
-        lifetime = max(user.all_group_ids.mapped('api_key_duration'), default=0.0) or 1.0
+        duration = values.get('duration')
+        if duration not in dict(_durations(user)):
+            return _json_error('invalid_grant')
+        days = int(duration)
         now = datetime.datetime.now()
-        expiration = now + datetime.timedelta(days=lifetime)
+        expiration = now + datetime.timedelta(days=days) if days else None
         code_hash = hashlib.sha256(kw['code'].encode()).hexdigest()
         try:
             with request.env.cr.savepoint():
@@ -289,6 +305,8 @@ class OAuthController(McpController):
                 if request.env.cr.rowcount != 1:
                     # Without the marker the code would stay replayable: issue nothing.
                     raise ValueError('issued key not found')
+        except ValidationError:
+            return _json_error('invalid_grant')
         except ValueError:
             # The savepoint already rolled the unmarked key back.
             _logger.error('OAuth key issued without a replay marker was rolled back')
@@ -308,7 +326,7 @@ class OAuthController(McpController):
                          urlsplit(values['client_id']).hostname, uid, revoked)
             return _json_error('invalid_grant')
         _logger.info('OAuth key issued: client host %s, uid %s', urlsplit(values['client_id']).hostname, uid)
-        return request.make_json_response({
-            'access_token': key, 'token_type': 'Bearer',
-            'expires_in': int((expiration - now).total_seconds()), 'scope': 'mcp',
-        }, headers=NO_STORE)
+        result = {'access_token': key, 'token_type': 'Bearer', 'scope': 'mcp'}
+        if expiration:
+            result['expires_in'] = int((expiration - now).total_seconds())
+        return request.make_json_response(result, headers=NO_STORE)
