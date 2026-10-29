@@ -1,4 +1,5 @@
 import datetime
+import re
 from types import SimpleNamespace
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -12,6 +13,34 @@ from .common import CALLBACK, CLIENT, CHALLENGE, FakeDocument, OAuthHttpCase
 
 @tagged('post_install', '-at_install')
 class TestAuthorize(OAuthHttpCase):
+    def test_duration_options(self):
+        self.login('oauth_duration_options')
+        _, _, response = self.consent()
+        select = re.search(r'<select\b[^>]*id="o_mcp_oauth_duration"[^>]*>(.*?)</select>',
+                           response.text, re.DOTALL)
+        self.assertIsNotNone(select)
+        options = re.findall(r'<option\b[^>]*value="([^"]+)"[^>]*>([^<]+)</option>', select.group(1))
+        self.assertEqual(options, [('1', '1 Day'), ('30', '1 Month')])
+        self.assertRegex(response.text, r'<option\b[^>]*value="30"[^>]*selected="selected"')
+        self.assertNotIn('oe_login_form', response.text)
+        self.authenticate('admin', 'admin')
+        _, _, response = self.consent()
+        select = re.search(r'<select\b[^>]*id="o_mcp_oauth_duration"[^>]*>(.*?)</select>',
+                           response.text, re.DOTALL)
+        self.assertIsNotNone(select)
+        options = re.findall(r'<option\b[^>]*value="([^"]+)"[^>]*>([^<]+)</option>', select.group(1))
+        self.assertEqual(options, [('1', '1 Day'), ('30', '1 Month'),
+                                   ('365', '1 Year'), ('0', 'Never')])
+        self.assertRegex(response.text, r'<option\b[^>]*value="30"[^>]*selected="selected"')
+
+    def test_invalid_approve_durations(self):
+        self.login('oauth_invalid_duration')
+        blob, csrf, _ = self.consent()
+        for duration in ('0', '365', '7', 'abc', ''):
+            response = self.decision(blob, csrf, duration=duration)
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn('Location', response.headers)
+
     def test_prelogin_gate_and_local_return(self):
         response = self.open(self.authorize_url())
         self.assertEqual(response.status_code, 303)

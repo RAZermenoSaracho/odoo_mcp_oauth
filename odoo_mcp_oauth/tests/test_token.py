@@ -1,6 +1,7 @@
 import datetime
 import hashlib
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 from odoo.tests import tagged
 from odoo.tools.misc import hash_sign
@@ -76,9 +77,78 @@ class TestToken(OAuthHttpCase):
         user = self.login('oauth_settings_user')
         user.group_ids = [(6, 0, [self.env.ref('base.group_user').id,
                                    self.env.ref('base.group_system').id])]
-        days = max(user.all_group_ids.mapped('api_key_duration'), default=0.0) or 1.0
         token = self.exchange(self.code()).json()
-        self.assertAlmostEqual(token['expires_in'], int(days * 86400), delta=1)
+        self.assertEqual(token['expires_in'], 30 * 86400)
+
+    def test_admin_durations_and_expiration(self):
+        self.authenticate('admin', 'admin')
+        for duration in ('1', '30', '365', '0'):
+            blob, csrf, _ = self.consent()
+            response = self.decision(blob, csrf, duration=duration)
+            code = parse_qs(urlsplit(response.headers['Location']).query)['code'][0]
+            before = datetime.datetime.now()
+            token = self.exchange(code).json()
+            self.assertIn('access_token', token)
+            record = self.env['res.users.apikeys'].sudo().search([
+                ('oauth_code_hash', '=', hashlib.sha256(code.encode()).hexdigest())], limit=1)
+            self.assertTrue(record)
+            if duration == '0':
+                self.assertFalse(record.expiration_date)
+                self.assertNotIn('expires_in', token)
+            else:
+                days = int(duration)
+                self.assertAlmostEqual((record.expiration_date - before).total_seconds(),
+                                       days * 86400, delta=120)
+                self.assertEqual(token['expires_in'], days * 86400)
+
+    def test_token_ignores_duration_params(self):
+        user = self.login('oauth_token_params')
+        code = self.code()
+        token = self.exchange(code, duration='0', expires_in='999999999').json()
+        self.assertEqual(token['expires_in'], 30 * 86400)
+        record = self.env['res.users.apikeys'].sudo().search([
+            ('oauth_code_hash', '=', hashlib.sha256(code.encode()).hexdigest())], limit=1)
+        self.assertEqual(record.user_id, user)
+        self.assertTrue(record.expiration_date)
+
+    def test_duration_cap_lowered_after_consent(self):
+        user = self.login('oauth_cap_later')
+        code = self.code()
+        before = self.env['res.users.apikeys'].sudo().search_count([
+            ('user_id', '=', user.id), ('scope', '=', 'mcp')])
+        for group in user.all_group_ids:
+            group.api_key_duration = 1
+        self.assertEqual(self.exchange(code).json()['error'], 'invalid_grant')
+        self.assertEqual(self.env['res.users.apikeys'].sudo().search_count([
+            ('user_id', '=', user.id), ('scope', '=', 'mcp')]), before)
+
+    def test_never_revoked_when_admin_rights_lost_before_exchange(self):
+        user = self.login('oauth_admin_later')
+        system = self.env.ref('base.group_system')
+        user.group_ids = [(4, system.id)]
+        blob, csrf, response = self.consent()
+        self.assertIn('Never', response.text)
+        response = self.decision(blob, csrf, duration='0')
+        code = parse_qs(urlsplit(response.headers['Location']).query)['code'][0]
+        user.group_ids = [(3, system.id)]
+        self.assertEqual(self.exchange(code).json()['error'], 'invalid_grant')
+        self.assertFalse(self.env['res.users.apikeys'].sudo().search_count([
+            ('user_id', '=', user.id), ('scope', '=', 'mcp')]))
+
+    def test_mcp_key_expiration_and_no_extension(self):
+        user = self.login('oauth_mcp_expiration')
+        code = self.code()
+        token = self.exchange(code).json()
+        record = self.env['res.users.apikeys'].sudo().search([
+            ('oauth_code_hash', '=', hashlib.sha256(code.encode()).hexdigest())], limit=1)
+        expiration = record.expiration_date
+        self.assertEqual(self.mcp(token['access_token']).status_code, 200)
+        record.invalidate_recordset()
+        self.assertEqual(record.expiration_date, expiration)
+        self.env.cr.execute("""UPDATE res_users_apikeys
+                            SET expiration_date = now() - interval '1 minute'
+                            WHERE id = %s""", [record.id])
+        self.assertEqual(self.mcp(token['access_token']).status_code, 401)
 
     def test_portal_user_cannot_exchange_after_consent(self):
         user = self.login('oauth_portal_later')
@@ -163,18 +233,9 @@ class TestToken(OAuthHttpCase):
 
     def test_settings_user_small_group_duration_cap(self):
         user = self.login('oauth_short_admin')
-        user.group_ids = [(6, 0, [self.env.ref('base.group_user').id,
-                                   self.env.ref('base.group_system').id])]
         for group in user.all_group_ids:
             group.api_key_duration = 0.25
-        expected = max(user.all_group_ids.mapped('api_key_duration'))
-        self.assertEqual(expected, 0.25)
-        before = datetime.datetime.now()
-        response = self.exchange(self.code())
-        self.assertEqual(response.status_code, 200)
-        self.assertLessEqual(response.json()['expires_in'], int(expected * 86400))
-        record = self.env['res.users.apikeys'].sudo().search([
-            ('oauth_client_id', '=', CLIENT), ('user_id', '=', user.id)], limit=1)
-        self.assertTrue(record)
-        self.assertLessEqual(record.expiration_date,
-                             before + datetime.timedelta(days=expected, seconds=10))
+        response = self.open(self.authorize_url())
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(parse_qs(urlsplit(response.headers['Location']).query)['error'],
+                         ['access_denied'])

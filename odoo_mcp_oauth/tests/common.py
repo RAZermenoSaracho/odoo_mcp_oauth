@@ -4,6 +4,8 @@ import hashlib
 import json
 import re
 from unittest.mock import patch
+
+import requests
 from urllib.parse import parse_qs, urlsplit
 
 from odoo.tests import HttpCase
@@ -40,11 +42,14 @@ class OAuthHttpCase(HttpCase):
         self.addCleanup(lambda: config.__setitem__('proxy_mode', old_proxy))
         for limiter in (main.TOKEN, main.AUTHORIZE, main.METADATA):
             limiter.clear()
+        # main.requests is the shared requests module: only fake https client documents,
+        # the test browser launcher also uses requests.get.
+        real_get = requests.get
         fake_get = patch('odoo.addons.odoo_mcp_oauth.controllers.main.requests.get',
-                         return_value=FakeDocument())
+                         side_effect=lambda url, *args, **kwargs: FakeDocument() if url.startswith('https://')
+                         else real_get(url, *args, **kwargs))
         fake_get.start()
         self.addCleanup(fake_get.stop)
-        self.fake_get = fake_get
         self.env['ir.config_parameter'].sudo().set_param('odoo_mcp_oauth.client_ids', CLIENT)
         self.host = self.env.cr.dbname + '.example.test'
         self.issuer = 'https://' + self.host
@@ -107,11 +112,15 @@ class OAuthHttpCase(HttpCase):
         self.assertIsNotNone(csrf)
         return blob.group(1), csrf.group(1), response
 
-    def decision(self, blob, csrf, decision='approve'):
+    def decision(self, blob, csrf, decision='approve', duration='30'):
         from urllib.parse import urlencode
-        return self.open('/oauth/authorize', data=urlencode({
+        params = {
             'consent': blob, 'csrf_token': csrf, 'decision': decision,
-        }).encode(), headers={'Content-Type': 'application/x-www-form-urlencoded'})
+        }
+        if decision == 'approve':
+            params['duration'] = duration
+        return self.open('/oauth/authorize', data=urlencode(params).encode(),
+                         headers={'Content-Type': 'application/x-www-form-urlencoded'})
 
     def code(self):
         blob, csrf, _ = self.consent()
