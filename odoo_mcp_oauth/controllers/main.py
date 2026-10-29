@@ -151,7 +151,7 @@ class OAuthController(McpController):
         }, headers=NO_STORE)
 
     @http.route('/oauth/authorize', type='http', auth='public', methods=['GET'],
-                sitemap=False)
+                sitemap=False, website=True)
     def authorize(self, **kw):
         if response := _limited(AUTHORIZE):
             return response
@@ -198,7 +198,7 @@ class OAuthController(McpController):
         }, headers=SAFE_HEADERS)
 
     @http.route('/oauth/authorize', type='http', auth='user', methods=['POST'],
-                csrf=True, sitemap=False, max_content_length=16 * 1024, readonly=False)
+                csrf=True, sitemap=False, website=True, max_content_length=16 * 1024, readonly=False)
     def authorize_post(self, **kw):
         if response := _limited(AUTHORIZE):
             return response
