@@ -38,7 +38,7 @@ One optional per-database addon gives the unchanged Odoo 19 MCP endpoint ChatGPT
 
 For every OAuth route, issuer SHALL be `https://` plus the request Host when, under `proxy_mode`, the last `X-Forwarded-Proto` value is `https`, or when ProxyFix has already set the request scheme to HTTPS; resource SHALL be issuer plus `/mcp`. This SHALL use Odoo's `proxy_mode` forwarded-header trust boundary. `web.base.url` SHALL not be required. An insecure origin or unresolved DB SHALL return 404. `X-Odoo-Database` or session state SHALL NOT override host-filtered DB selection. `GET /.well-known/oauth-authorization-server` SHALL publish `issuer`, `authorization_endpoint`, `token_endpoint`, `response_types_supported=["code"]`, `grant_types_supported=["authorization_code"]`, `code_challenge_methods_supported=["S256"]`, `token_endpoint_auth_methods_supported=["none"]`, `scopes_supported=["mcp"]`, `client_id_metadata_document_supported=true`, and `authorization_response_iss_parameter_supported=true`. Both `GET /.well-known/oauth-protected-resource` and `/mcp` suffix SHALL return the same RFC 9728 document: `resource`, `authorization_servers=[issuer]`, `scopes_supported=["mcp"]`, and `bearer_methods_supported=["header"]`.
 
-Production cloudflared sends the original Host and `X-Forwarded-Proto`, but no `X-Forwarded-Host`, so Odoo's ProxyFix does not run. The production `odoo` DB has auto-recorded `web.base.url` with an HTTP scheme. If `X-Forwarded-Host` is supplied elsewhere, the host and selected database still follow Odoo's host-filtered selection.
+A reverse proxy (for example cloudflared) that forwards the original Host and `X-Forwarded-Proto` but no `X-Forwarded-Host` does not trigger Odoo's ProxyFix. If `X-Forwarded-Host` is supplied, the host and selected database still follow Odoo's host-filtered selection.
 
 #### Scenario: Discovery on host
 - **WHEN** AS metadata and both PRM paths are requested at `https://odoo.example.com`
@@ -48,9 +48,9 @@ Production cloudflared sends the original Host and `X-Forwarded-Proto`, but no `
 - **WHEN** HTTP is used, no DB resolves, or a database header tries to override the host-filtered DB
 - **THEN** OAuth routes fail closed or stay in the host-selected DB, never disclosing another issuer or key.
 
-#### Scenario: Production proxy without forwarded host
+#### Scenario: Reverse proxy without forwarded host
 - **WHEN** `proxy_mode` is enabled, original Host is present, `X-Forwarded-Host` is absent, and the last `X-Forwarded-Proto` value is `https`
-- **THEN** OAuth metadata uses `https://<Host>` as issuer even though ProxyFix did not run and `web.base.url` records HTTP; another last proto value makes OAuth routes return 404.
+- **THEN** OAuth metadata uses `https://<Host>` as issuer even though ProxyFix did not run; another last proto value makes OAuth routes return 404.
 
 ### Requirement: Exact CIMD allow-list and bounded retrieval
 
@@ -224,7 +224,7 @@ The addon SHALL own no `res.users.apikeys` field other than `oauth_client_id` an
 
 ### Requirement: Revocation, isolation, and rollback
 
-Core autovacuum SHALL delete only keys with `expiration_date < now`; unexpired key rows and their code hash markers SHALL remain. Every selectable duration SHALL be at least one day (or non-expiring), beyond the 60-second code lifetime. Users SHALL revoke through Preferences > Account Security > API Keys. Removing a URL from Settings SHALL delete keys with that `oauth_client_id` on save; pending codes for removed clients SHALL fail the exchange allow-list check. There SHALL be no uninstall cleanup hook: after uninstall, residual `mcp`-scoped keys are inert because the original `/mcp` bearer route checks `rpc`, and core autovacuum removes them at expiry. Keys and signing secret SHALL remain per DB. A key from A SHALL fail on B's `/mcp`; B's resource SHALL fail at A's authorize/token; `X-Odoo-Database` SHALL not override host selection. `mcp` keys SHALL fail on `/json/2` and `/xmlrpc/2`; legacy `rpc`/NULL keys SHALL work at `/mcp`. Automated isolation SHALL use two disposable DBs; a manual disposable-copy check SHALL try every production DB name as `X-Odoo-Database` against each host.
+Core autovacuum SHALL delete only keys with `expiration_date < now`; unexpired key rows and their code hash markers SHALL remain. Every selectable duration SHALL be at least one day (or non-expiring), beyond the 60-second code lifetime. Users SHALL revoke through Preferences > Account Security > API Keys. Removing a URL from Settings SHALL delete keys with that `oauth_client_id` on save; pending codes for removed clients SHALL fail the exchange allow-list check. There SHALL be no uninstall cleanup hook: after uninstall, residual `mcp`-scoped keys are inert because the original `/mcp` bearer route checks `rpc`, and core autovacuum removes them at expiry. Keys and signing secret SHALL remain per DB. A key from A SHALL fail on B's `/mcp`; B's resource SHALL fail at A's authorize/token; `X-Odoo-Database` SHALL not override host selection. `mcp` keys SHALL fail on `/json/2` and `/xmlrpc/2`; legacy `rpc`/NULL keys SHALL work at `/mcp`. Automated isolation SHALL use two disposable DBs; a manual disposable-copy check SHALL try every configured DB name as `X-Odoo-Database` against each host.
 
 #### Scenario: User, admin, and replay revocation
 - **WHEN** a user deletes a key, an admin removes its client URL, or a code is replayed
