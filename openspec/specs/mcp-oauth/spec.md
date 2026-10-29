@@ -70,7 +70,7 @@ One Settings field SHALL store exact HTTPS CIMD client-ID URLs, one per line, in
 
 ### Requirement: Pre-login validation and explicit consent
 
-`GET /oauth/authorize` SHALL declare `auth='public'`. Before login it SHALL check only that `client_id` is allow-listed and the request is well-formed. If `request.env.user._is_public()`, it SHALL redirect to `/web/login?redirect=<url-quoted local /oauth/authorize URL>`; it SHALL never redirect to the client before login. After login on the same GET, it SHALL fetch and validate CIMD, exact `redirect_uri`, `response_type=code`, S256 challenge and method, and exact `resource=issuer+'/mcp'`. The optional `scope` request parameter SHALL be accepted and ignored; token scope is always `mcp`. Invalid client or redirect SHALL show an error page; other authorization errors SHALL redirect to the validated callback with `error`, original `state` when supplied, and `iss=issuer`. Native login rotation returns to the same local authorize URL. No dispatch/auth-path customization or server-side transaction is needed. Only active `user._is_internal()` users may consent. Portal/public or archived users SHALL get `access_denied` at a validated callback. QWeb consent SHALL display client name/host, DB, user, and lifetime. Consent responses SHALL set `X-Frame-Options: DENY`, `Content-Security-Policy: frame-ancestors 'none'`, `Referrer-Policy: no-referrer`, and `Cache-Control: no-store`.
+`GET /oauth/authorize` SHALL declare `auth='public'`. Before login it SHALL check only that `client_id` is allow-listed and the request is well-formed. If `request.env.user._is_public()`, it SHALL redirect to `/web/login?redirect=<url-quoted local /oauth/authorize URL>`; it SHALL never redirect to the client before login. After login on the same GET, it SHALL fetch and validate CIMD, exact `redirect_uri`, `response_type=code`, S256 challenge and method, and exact `resource=issuer+'/mcp'`. The optional `scope` request parameter SHALL be accepted and ignored; token scope is always `mcp`. Invalid client or redirect SHALL show an error page; other authorization errors SHALL redirect to the validated callback with `error`, original `state` when supplied, and `iss=issuer`. Native login rotation returns to the same local authorize URL. No dispatch/auth-path customization or server-side transaction is needed. Only active `user._is_internal()` users may consent. Portal/public or archived users SHALL get `access_denied` at a validated callback. QWeb consent SHALL display client name/host, DB, user, and the selectable access duration (see "User-selected token duration"). Consent responses SHALL set `X-Frame-Options: DENY`, `Content-Security-Policy: frame-ancestors 'none'`, `Referrer-Policy: no-referrer`, and `Cache-Control: no-store`.
 
 `POST /oauth/authorize` SHALL declare `auth='user'` and `readonly=False`. The consent form SHALL carry Odoo's CSRF token and exactly one hidden OAuth parameter: `hash_sign(env, 'odoo_mcp_oauth.consent', {db, uid, client_id, client_name, redirect_uri, code_challenge, resource, state}, expiration=10 minutes)`. POST SHALL verify the signed blob, reject a blob whose `db` differs from the selected database, require blob `uid` to equal the current user, require the client still allow-listed and the user active/internal, and require explicit Approve or Deny. It SHALL NOT fetch CIMD again or compare separate hidden request fields. Approve issues a code; Deny redirects with `access_denied`, state, and iss.
 
@@ -140,7 +140,7 @@ Approval SHALL call `odoo.tools.misc.hash_sign(env, 'odoo_mcp_oauth.code', {db, 
 
 ### Requirement: Token exchange and native lifetime
 
-`POST /oauth/token` SHALL use `auth='none'` (uid None; `ir_http.py:260`), `readonly=False` (Odoo 19 otherwise defaults `auth='none'` to a read-only cursor), `csrf=False`, only `grant_type=authorization_code` and public auth method `none`. Require exact client ID, redirect, resource, and correct S256 verifier; recheck client allow-list and signed user's active/internal state. The optional `scope` parameter SHALL be ignored. Narrow sudo SHALL be used only to (a) call `hash_sign`/`verify_hash_signed`, which read system-only `database.secret` through `ir.config_parameter` (`ir_config_parameter.py:69`, `base ir.model.access.csv:118`); (b) read the signed UID's active/`_is_internal` state; (c) locate the new key by `index=key[:INDEX_SIZE]` and write `oauth_client_id`/`oauth_code_hash` (`res_users.py:1509,1608`; `_generate` returns only the key after a raw INSERT); and (d) update replay revocation scope through a fresh registry cursor and parameterized plain SQL. `res.users.apikeys` has `_auto=False` and core manages it with plain SQL. Employees have read-only apikeys ACL (`ir.model.access.csv:92`). `_generate(scope='mcp', name='OAuth: <client_name>', expiration_date=now + native_max_days)` SHALL run on `env.with_user(uid)` with `su=False`, since it reads `env.user` for owner and duration; a test SHALL assert `su=False` inside `_generate`. Explicitly compute `native_max_days=max(group.api_key_duration for group in user.all_group_ids) or 1.0` for all users, including Settings users. Other keys for the same client SHALL stay usable until the user deletes them in Preferences. Core credential lookup is plain SQL (`res_users.py:1574`), so a replay scope write SHALL immediately make that key fail `mcp` and `rpc`. Respond with `access_token`, `token_type=Bearer`, `expires_in`, `scope=mcp`, and `Cache-Control: no-store`; no refresh token. Use generic errors. Tokens and verifiers SHALL never appear in URLs/logs; codes only on validated callback redirects.
+`POST /oauth/token` SHALL use `auth='none'` (uid None; `ir_http.py:260`), `readonly=False` (Odoo 19 otherwise defaults `auth='none'` to a read-only cursor), `csrf=False`, only `grant_type=authorization_code` and public auth method `none`. Require exact client ID, redirect, resource, and correct S256 verifier; recheck client allow-list and signed user's active/internal state. The optional `scope` parameter SHALL be ignored. Narrow sudo SHALL be used only to (a) call `hash_sign`/`verify_hash_signed`, which read system-only `database.secret` through `ir.config_parameter` (`ir_config_parameter.py:69`, `base ir.model.access.csv:118`); (b) read the signed UID's active/`_is_internal` state; (c) locate the new key by `index=key[:INDEX_SIZE]` and write `oauth_client_id`/`oauth_code_hash` (`res_users.py:1509,1608`; `_generate` returns only the key after a raw INSERT); and (d) update replay revocation scope through a fresh registry cursor and parameterized plain SQL. `res.users.apikeys` has `_auto=False` and core manages it with plain SQL. Employees have read-only apikeys ACL (`ir.model.access.csv:92`). `_generate(scope='mcp', name='OAuth: <client_name>', expiration_date=<user-selected duration from the signed code>)` SHALL run on `env.with_user(uid)` with `su=False`, since it reads `env.user` for owner and duration; a test SHALL assert `su=False` inside `_generate`. The duration SHALL be re-checked against the owner's currently permitted durations at exchange. Other keys for the same client SHALL stay usable until the user deletes them in Preferences. Core credential lookup is plain SQL (`res_users.py:1574`), so a replay scope write SHALL immediately make that key fail `mcp` and `rpc`. Respond with `access_token`, `token_type=Bearer`, `expires_in` (omitted for a non-expiring key), `scope=mcp`, and `Cache-Control: no-store`; no refresh token. Use generic errors. Tokens and verifiers SHALL never appear in URLs/logs; codes only on validated callback redirects.
 
 #### Scenario: Valid exchange and owner
 - **WHEN** all bindings and PKCE match for an active internal user
@@ -154,13 +154,45 @@ Approval SHALL call `odoo.tools.misc.hash_sign(env, 'odoo_mcp_oauth.code', {db, 
 - **WHEN** code owner is archived or made portal before exchange
 - **THEN** exchange returns `invalid_grant` and no key.
 
-#### Scenario: Settings and ordinary duration cap
-- **WHEN** a Settings or ordinary internal user exchanges a code
-- **THEN** expiry respects the explicitly computed native group maximum even where core bypasses Settings users.
+#### Scenario: Duration permission lowered after consent
+- **WHEN** the owner's permitted durations no longer include the signed duration at exchange
+- **THEN** exchange returns `invalid_grant` and no key is created.
 
 #### Scenario: Immediate replay revocation
 - **WHEN** a code replay changes the winner key's scope and that key is immediately used at `/mcp` or an RPC endpoint
 - **THEN** plain-SQL credential lookup rejects it without waiting for cache invalidation.
+
+### Requirement: Browser-submitted consent
+
+The consent page SHALL NOT use the `oe_login_form` class or any other hook of web's public `Login` interaction, which disables the first submit button on submit and so drops a button-carried value from the form data. Approve and Deny SHALL be separate forms whose decision travels in a hidden input. An automated test SHALL submit consent in a real browser with public JavaScript loaded.
+
+#### Scenario: Approve in a real browser
+- **WHEN** an internal user clicks Approve on the rendered consent page in a browser with Odoo's frontend assets
+- **THEN** the POST carries `decision=approve` and the selected duration, and the client receives a 303 with `code`, `state`, and `iss`.
+
+#### Scenario: Deny in a real browser
+- **WHEN** the user clicks Deny
+- **THEN** the client receives `error=access_denied` with `state` and `iss`.
+
+### Requirement: User-selected token duration
+
+The consent page SHALL offer 1 Day, 1 Month, 1 Year and Never (values 1, 30, 365, 0 days), filtered by core `res.users.apikeys.description._selection_duration()` for the consenting user: Never only for system administrators (core allows a NULL `expiration_date` only for `is_system()`), the others only up to the user's maximum group `api_key_duration`. The default SHALL be 1 Month when permitted, otherwise the first permitted option. If no option is permitted the client SHALL receive `access_denied`. The POST SHALL reject any duration outside the user's permitted set. The chosen duration SHALL be carried only in the HMAC-signed authorization code; the token endpoint SHALL ignore any client-supplied duration or expiry parameter, re-check the duration against the owner's current permissions, and mint a native key with `expiration_date = now + days` or NULL for Never. Core `_check_credentials` rejects expired keys, nothing extends expiry on use, and core autovacuum deletes expired keys. Revocation stays Preferences > Account Security > API Keys and the Settings allow-list.
+
+#### Scenario: Options follow native permissions
+- **WHEN** a plain internal user (90-day group maximum) and a system administrator open consent
+- **THEN** the user sees 1 Day and 1 Month, the administrator sees all four, and 1 Month is preselected.
+
+#### Scenario: Chosen expiry is persisted
+- **WHEN** a duration is approved and the code exchanged
+- **THEN** the key's `expiration_date` is now plus that many days (NULL for Never) and `expires_in` matches (absent for Never).
+
+#### Scenario: Duration tampering
+- **WHEN** a non-administrator posts Never, 1 Year, an unlisted value, or none, or a token request adds `duration`/`expires_in`
+- **THEN** consent shows the error page, or the extra token parameters are ignored.
+
+#### Scenario: Expired key rejected without extension
+- **WHEN** an issued key's `expiration_date` has passed
+- **THEN** `/mcp` returns 401; successful calls before expiry never change `expiration_date`.
 
 ### Requirement: Public endpoint abuse limits
 
@@ -192,7 +224,7 @@ The addon SHALL own no `res.users.apikeys` field other than `oauth_client_id` an
 
 ### Requirement: Revocation, isolation, and rollback
 
-Core autovacuum SHALL delete only keys with `expiration_date < now`; unexpired key rows and their code hash markers SHALL remain. Native key lifetime SHALL be at least one day, beyond the 60-second code lifetime. Users SHALL revoke through Preferences > Account Security > API Keys. Removing a URL from Settings SHALL delete keys with that `oauth_client_id` on save; pending codes for removed clients SHALL fail the exchange allow-list check. There SHALL be no uninstall cleanup hook: after uninstall, residual `mcp`-scoped keys are inert because the original `/mcp` bearer route checks `rpc`, and core autovacuum removes them at expiry. Keys and signing secret SHALL remain per DB. A key from A SHALL fail on B's `/mcp`; B's resource SHALL fail at A's authorize/token; `X-Odoo-Database` SHALL not override host selection. `mcp` keys SHALL fail on `/json/2` and `/xmlrpc/2`; legacy `rpc`/NULL keys SHALL work at `/mcp`. Automated isolation SHALL use two disposable DBs; a manual disposable-copy check SHALL try every production DB name as `X-Odoo-Database` against each host.
+Core autovacuum SHALL delete only keys with `expiration_date < now`; unexpired key rows and their code hash markers SHALL remain. Every selectable duration SHALL be at least one day (or non-expiring), beyond the 60-second code lifetime. Users SHALL revoke through Preferences > Account Security > API Keys. Removing a URL from Settings SHALL delete keys with that `oauth_client_id` on save; pending codes for removed clients SHALL fail the exchange allow-list check. There SHALL be no uninstall cleanup hook: after uninstall, residual `mcp`-scoped keys are inert because the original `/mcp` bearer route checks `rpc`, and core autovacuum removes them at expiry. Keys and signing secret SHALL remain per DB. A key from A SHALL fail on B's `/mcp`; B's resource SHALL fail at A's authorize/token; `X-Odoo-Database` SHALL not override host selection. `mcp` keys SHALL fail on `/json/2` and `/xmlrpc/2`; legacy `rpc`/NULL keys SHALL work at `/mcp`. Automated isolation SHALL use two disposable DBs; a manual disposable-copy check SHALL try every production DB name as `X-Odoo-Database` against each host.
 
 #### Scenario: User, admin, and replay revocation
 - **WHEN** a user deletes a key, an admin removes its client URL, or a code is replayed
