@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.mcp.oauth</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="base.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//form" position="inside">
+                <app string="MCP OAuth" name="mcp_oauth">
+                    <block title="OAuth clients">
+                        <setting string="Allowed client metadata URLs" help="One exact HTTPS CIMD URL per line. Removing a URL revokes its API keys.">
+                            <field name="mcp_oauth_client_ids" widget="text" placeholder="https://chatgpt.com/oauth/client.json"/>
+                        </setting>
+                    </block>
+                </app>
+            </xpath>
+        </field>
+    </record>
+</odoo>

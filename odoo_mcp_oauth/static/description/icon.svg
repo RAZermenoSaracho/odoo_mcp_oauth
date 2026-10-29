@@ -1,0 +1,15 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="rzGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#5EAAEF"/>
+      <stop offset="100%" stop-color="#4CD98B"/>
+    </linearGradient>
+  </defs>
+  <text x="256.00" y="297.62"
+        font-family="'Courier New', 'SF Mono', Consolas, monospace"
+        font-size="174.75"
+        font-weight="600"
+        fill="url(#rzGradient)"
+        text-anchor="middle"
+        letter-spacing="0">{OA}</text>
+</svg>

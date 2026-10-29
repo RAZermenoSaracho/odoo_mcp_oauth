@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <template id="consent" name="MCP OAuth consent">
+        <t t-call="web.login_layout">
+            <div class="oe_login_form">
+                <h2>Authorize MCP access</h2>
+                <p><strong t-out="client_name"/> (<span t-out="client_host"/>) requests access to this database.</p>
+                <p>Database: <span t-out="database"/></p>
+                <p>User: <span t-out="user_name"/></p>
+                <p>The API key expires after <span t-out="lifetime_days"/> days.</p>
+                <form action="/oauth/authorize" method="post">
+                    <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+                    <input type="hidden" name="consent" t-att-value="consent"/>
+                    <button type="submit" name="decision" value="approve" class="btn btn-primary">Approve</button>
+                    <button type="submit" name="decision" value="deny" class="btn btn-secondary">Deny</button>
+                </form>
+            </div>
+        </t>
+    </template>
+    <template id="error" name="MCP OAuth error">
+        <t t-call="web.login_layout">
+            <div class="oe_login_form">
+                <h2>Authorization unavailable</h2>
+                <p>This OAuth request cannot be completed.</p>
+            </div>
+        </t>
+    </template>
+</odoo>
