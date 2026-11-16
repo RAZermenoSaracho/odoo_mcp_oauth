@@ -38,14 +38,22 @@
 ## 5. Docs
 
 - [x] 5.1 README: authentication methods (API key + OAuth), Claude configuration, hosted clients, the Muse values to enter, archive vs delete vs individual vs bulk revoke semantics, the diagnostic log
-- [ ] 5.2 Sync the spec delta into `openspec/specs/mcp-oauth/spec.md` at archive time
+- [x] 5.2 Sync the spec delta into `openspec/specs/mcp-oauth/spec.md` at archive time
 
 ## 6. Deployment (separate operator approval)
 
-- [ ] 6.1 Upgrade on a disposable copy, then on approved tenants: `odoo-bin -d <db> -u odoo_mcp_oauth --stop-after-init`, then `pm2 restart odoo --update-env`
-- [ ] 6.2 Confirm that pre-existing keys still authenticate after the upgrade
+- [x] 6.1 Upgrade on a disposable copy, then on approved tenants: `odoo-bin -d <db> -u odoo_mcp_oauth --stop-after-init`, then `pm2 restart odoo --update-env`
+- [x] 6.2 Confirm that pre-existing keys still authenticate after the upgrade
 
-## 7. Manual validation (real clients, not automatable)
+## Deployment record (2026-11-16)
+
+- Backups: `pg_dump -Fc` of `odoo`, `odooers`, `ramzsa-odoo` and `home-nsr-odoo`, plus filestore tarballs, in `/Users/razs/backups/odoo/pre-mcp-oauth-1.1.0-20261116/`. The `odoo` dump was test-restored.
+- `pm2 stop odoo`; `-u odoo_mcp_oauth` on all four databases (each exited 0 with no errors); `pm2 start odoo`. About 64 s of downtime.
+- API-key rows identical before and after; the existing Claude API-key connections (`odoo`, `odooers`) still work.
+- Claude CIMD URLs appended to the allow-list of `odoo` and `odooers` (ChatGPT entry kept). Tenant databases left unchanged.
+- Production smoke on `odoo.razs.dev` and `odooers.razs.dev`: discovery, 401 challenge, authorize gate for Claude web, Claude Code loopback and ChatGPT, unknown client rejected, hosted document 200/404, bulk and individual revocation, archive and delete. All passed, using disposable clients and keys only.
+
+## 7. Manual validation (real clients, not automatable). Pending external validation
 
 - [ ] 7.1 On the chosen tenant: create the Muse hosted client and enter the Client ID, `/oauth/authorize`, `/oauth/token`, scope `mcp` and no secret in Muse
 - [ ] 7.2 Capture the logs: discovery paths hit, authorize params present (`resource`, `scope`, `code_challenge_method`), token result
