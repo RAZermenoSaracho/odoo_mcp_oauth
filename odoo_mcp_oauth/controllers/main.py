@@ -22,6 +22,7 @@ from odoo.tools.misc import hash_sign, verify_hash_signed
 from odoo.addons.odoo_mcp.controllers.main import McpController
 from odoo.addons.odoo_mcp.ratelimit import SlidingWindow
 from odoo.addons.odoo_mcp_oauth.models.ir_http import client_ip, origin
+from odoo.addons.odoo_mcp_oauth.models.oauth_client import CLIENT_PATH, UUID, redirect_uris
 from odoo.addons.odoo_mcp_oauth.models.res_config_settings import CLIENT_IDS_PARAM, client_ids
 
 _logger = logging.getLogger(__name__)
@@ -59,8 +60,40 @@ def _issuer():
     return issuer
 
 
-def _allowed_clients():
-    return client_ids(request.env['ir.config_parameter'].sudo().get_param(CLIENT_IDS_PARAM))
+def _hosted_record(issuer, client_id):
+    """Active hosted client of this database for ``client_id``, resolved without any fetch."""
+    prefix = issuer + CLIENT_PATH
+    if not client_id.startswith(prefix) or not client_id.endswith('.json'):
+        return None
+    client_uuid = client_id[len(prefix):-len('.json')]
+    if not UUID.fullmatch(client_uuid):
+        return None
+    # Public route and pre-consent lookup: read one active record by its exact identifier.
+    return request.env['mcp.oauth.client'].sudo().search([('uuid', '=', client_uuid)], limit=1) or None
+
+
+def _hosted_document(issuer, client_id):
+    client = _hosted_record(issuer, client_id)
+    if not client:
+        return None
+    return {
+        'client_id': client_id,
+        'client_name': client.name,
+        'redirect_uris': redirect_uris(client.redirect_uris),
+        'token_endpoint_auth_method': 'none',
+        'grant_types': ['authorization_code'],
+        'response_types': ['code'],
+    }
+
+
+def _is_allowed(client_id):
+    """Allow-listed external CIMD URL, or an active hosted client of this issuer."""
+    if not isinstance(client_id, str) or not client_id:
+        return False
+    if client_id in client_ids(request.env['ir.config_parameter'].sudo().get_param(CLIENT_IDS_PARAM)):
+        return True
+    issuer = origin()
+    return bool(issuer and _hosted_record(issuer, client_id))
 
 
 def _json_error(error, status=400):
@@ -87,12 +120,45 @@ def _durations(user):
     return [(value, label) for value, label in DURATIONS if value in allowed]
 
 
+LOOPBACK = {'localhost', '127.0.0.1', '::1'}
+
+
+def _loopback(parts):
+    return parts.scheme == 'http' and parts.hostname in LOOPBACK
+
+
+def _redirect_matches(redirect_uri, registered):
+    """Exact match, plus RFC 8252 7.3: a registered port-less loopback http URI matches any port."""
+    if not isinstance(registered, list):
+        return False
+    if redirect_uri in registered:
+        return True
+    try:
+        requested = urlsplit(redirect_uri)
+        requested.port  # raises ValueError on a malformed port
+    except ValueError:
+        return False
+    if not _loopback(requested) or requested.username or requested.password or requested.fragment:
+        return False
+    for uri in registered:
+        try:
+            candidate = urlsplit(uri) if isinstance(uri, str) else None
+            if (candidate and _loopback(candidate) and candidate.port is None
+                    and not candidate.username and not candidate.password and not candidate.fragment
+                    and (candidate.hostname, candidate.path, candidate.query)
+                    == (requested.hostname, requested.path, requested.query)):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def _client_document(url, redirect_uri):
     try:
         client = urlsplit(url)
         callback = urlsplit(redirect_uri)
-        if (client.scheme != 'https' or not client.hostname
-                or callback.scheme != 'https' or not callback.hostname):
+        if (client.scheme != 'https' or not client.hostname or not callback.hostname
+                or (callback.scheme != 'https' and not _loopback(callback))):
             return None
         response = requests.get(url, timeout=5, allow_redirects=False, stream=True,
                                 headers={'Accept': 'application/json'})
@@ -107,8 +173,7 @@ def _client_document(url, redirect_uri):
         document = json.loads(data)
         if not isinstance(document, dict) or document.get('client_id') != url:
             return None
-        uris = document.get('redirect_uris')
-        if not isinstance(uris, list) or redirect_uri not in uris:
+        if not _redirect_matches(redirect_uri, document.get('redirect_uris')):
             return None
         return document
     except (requests.RequestException, ValueError, TypeError, UnicodeError):
@@ -157,6 +222,17 @@ class OAuthController(McpController):
             'bearer_methods_supported': ['header'],
         }, headers=NO_STORE)
 
+    @http.route('/oauth/clients/<string:client_file>', type='http', auth='none',
+                methods=['GET'], csrf=False, sitemap=False, save_session=False)
+    def hosted_client(self, client_file):
+        if response := _limited(METADATA, json_response=True):
+            return response
+        issuer = _issuer()
+        document = _hosted_document(issuer, issuer + CLIENT_PATH + client_file)
+        if not document:
+            raise NotFound()
+        return request.make_json_response(document, headers=NO_STORE)
+
     @http.route('/oauth/authorize', type='http', auth='public', methods=['GET'],
                 sitemap=False, website=True)
     def authorize(self, **kw):
@@ -165,21 +241,30 @@ class OAuthController(McpController):
         issuer = _issuer()
         client_id = kw.get('client_id')
         redirect_uri = kw.get('redirect_uri')
-        if (not client_id or client_id not in _allowed_clients()
-                or kw.get('response_type') != 'code' or not redirect_uri
-                or not kw.get('code_challenge') or not kw.get('code_challenge_method')
-                or not kw.get('resource')):
+        missing = [key for key in ('redirect_uri', 'code_challenge', 'code_challenge_method', 'resource')
+                   if not kw.get(key)]
+        if not _is_allowed(client_id) or kw.get('response_type') != 'code' or missing:
+            # Names only, never values: enough to see what a new client actually sends.
+            _logger.info('OAuth authorize rejected: client allowed=%s, response_type ok=%s, missing=%s',
+                         _is_allowed(client_id), kw.get('response_type') == 'code', missing)
             return _error_page()
         if request.env.user._is_public():
             local_url = request.httprequest.full_path.rstrip('?')
             return request.redirect('/web/login?redirect=' + url_quote(local_url, safe=''), code=303)
-        document = _client_document(client_id, redirect_uri)
-        if not document:
+        hosted = client_id.startswith(issuer + CLIENT_PATH)
+        # Hosted IDs are resolved from this database only, never fetched.
+        document = (_hosted_document(issuer, client_id) if hosted
+                    else _client_document(client_id, redirect_uri))
+        if not document or not _redirect_matches(redirect_uri, document['redirect_uris']):
+            _logger.info('OAuth authorize rejected: unknown client document or redirect_uri mismatch')
             return _error_page()
         state = kw.get('state', '')
         if (kw.get('code_challenge_method') != 'S256'
                 or not CHALLENGE.fullmatch(kw['code_challenge'])
                 or kw['resource'] != issuer + '/mcp'):
+            _logger.info('OAuth authorize rejected: S256 ok=%s, challenge ok=%s, resource ok=%s',
+                         kw.get('code_challenge_method') == 'S256',
+                         bool(CHALLENGE.fullmatch(kw['code_challenge'])), kw['resource'] == issuer + '/mcp')
             return _redirect(redirect_uri, {'error': 'invalid_request',
                                             'error_description': 'Invalid authorization request',
                                             'state': state, 'iss': issuer})
@@ -201,7 +286,9 @@ class OAuthController(McpController):
         consent = hash_sign(request.env(su=True), 'odoo_mcp_oauth.consent', values,
                             expiration=datetime.timedelta(minutes=10))
         return request.render('odoo_mcp_oauth.consent', {
-            'client_name': name, 'client_host': urlsplit(client_id).hostname,
+            'client_name': name,
+            # A hosted Client ID names this server; show where the code will go instead.
+            'client_host': urlsplit(redirect_uri if hosted else client_id).hostname,
             'database': request.db, 'user_name': user.name,
             'durations': durations, 'default_duration': '30' if '30' in dict(durations) else durations[0][0],
             'consent': consent,
@@ -220,7 +307,7 @@ class OAuthController(McpController):
         except (TypeError, ValueError, UnicodeError):
             values = None
         if (not isinstance(values, dict) or values.get('uid') != request.env.uid
-                or values.get('client_id') not in _allowed_clients()
+                or not _is_allowed(values.get('client_id'))
                 or not _valid_user(request.env.user)
                 or kw.get('decision') not in ('approve', 'deny')
                 or not all(key in values for key in (
@@ -270,7 +357,7 @@ class OAuthController(McpController):
         if (any(values.get(key) != kw[key] for key in ('client_id', 'redirect_uri', 'resource'))
                 or values.get('resource') != issuer + '/mcp'
                 or values.get('db') != request.db
-                or values['client_id'] not in _allowed_clients()):
+                or not _is_allowed(values['client_id'])):
             return _json_error('invalid_grant')
         challenge = base64.urlsafe_b64encode(hashlib.sha256(kw['code_verifier'].encode()).digest()).decode().rstrip('=')
         if not hmac.compare_digest(challenge, values.get('code_challenge', '')):
