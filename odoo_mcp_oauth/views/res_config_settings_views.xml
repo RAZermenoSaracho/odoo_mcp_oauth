@@ -11,6 +11,9 @@
                         <setting string="Allowed client metadata URLs" help="One exact HTTPS CIMD URL per line. Removing a URL revokes its API keys.">
                             <field name="mcp_oauth_client_ids" widget="text" placeholder="https://chatgpt.com/oauth/client.json"/>
                         </setting>
+                        <setting string="Hosted clients" help="For clients that ask for a Client ID instead of publishing their own metadata document.">
+                            <button name="%(odoo_mcp_oauth.mcp_oauth_client_action)d" type="action" string="Manage hosted clients" icon="oi-arrow-right" class="btn-link"/>
+                        </setting>
                     </block>
                 </app>
             </xpath>

@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="mcp_oauth_client_view_list" model="ir.ui.view">
+        <field name="name">mcp.oauth.client.list</field>
+        <field name="model">mcp.oauth.client</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="name"/>
+                <field name="client_id"/>
+                <field name="create_date"/>
+                <field name="active" column_invisible="True"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="mcp_oauth_client_view_form" model="ir.ui.view">
+        <field name="name">mcp.oauth.client.form</field>
+        <field name="model">mcp.oauth.client</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_revoke_credentials" type="object" string="Revoke All Credentials"
+                            class="btn-secondary" groups="base.group_system" invisible="not id"
+                            confirm="Delete every API key issued to this client, for all users? Users will have to authorize it again. Other clients and API keys are not affected."/>
+                </header>
+                <sheet>
+                    <widget name="web_ribbon" title="Archived" bg_color="text-bg-danger" invisible="active"/>
+                    <group>
+                        <field name="name" placeholder="e.g. Meta AI Muse"/>
+                        <field name="redirect_uris" placeholder="https://agent.meta.ai/api/hatch/oauth/callback"/>
+                        <field name="client_id" widget="CopyClipboardChar" invisible="not id"/>
+                        <field name="uuid" invisible="not id"/>
+                        <field name="active" invisible="1"/>
+                    </group>
+                    <div class="text-muted">
+                        Archiving blocks new authorizations and keeps issued keys. Deleting also deletes the keys issued to this client.
+                        Users revoke single connections in their API Keys (Users → Security).
+                    </div>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="mcp_oauth_client_view_search" model="ir.ui.view">
+        <field name="name">mcp.oauth.client.search</field>
+        <field name="model">mcp.oauth.client</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="name"/>
+                <filter name="archived" string="Archived" domain="[('active', '=', False)]"/>
+            </search>
+        </field>
+    </record>
+
+    <record id="mcp_oauth_client_action" model="ir.actions.act_window">
+        <field name="name">Hosted OAuth clients</field>
+        <field name="res_model">mcp.oauth.client</field>
+        <field name="view_mode">list,form</field>
+        <field name="group_ids" eval="[Command.link(ref('base.group_system'))]"/>
+    </record>
+</odoo>
